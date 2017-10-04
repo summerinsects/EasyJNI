@@ -16,7 +16,7 @@ class Logger {
 Then we can call it from C++ with just one line of code
 
 ```cpp
-EasyJNI::callStaticVoidMethod("path/to/Logger", "purchase", float(3.14), "USD");
+EasyJNI::callStaticMethod<void>("path/to/Logger", "purchase", float(3.14), "USD");
 ```
 
 There can be any number of arguments and the method signature is automatically inferred under the hood with template magic. Supported argument data types are: bool, char, short, int, long, float, double, char* and std::string. Make sure the arguments on the Java side have corresponding primitive types (no Boolean, Integer, etc), except for char* and std::string, corresponding Java type for them is String. 
@@ -28,17 +28,17 @@ One thing to note is that it should be obvious for the compiler to infer templat
 ```cpp
 float sum = 3.14;
 std::string currency = "USD";
-EasyJNI::callStaticVoidMethod("path/to/Logger", "purchase", sum, currency);
+EasyJNI::callStaticMethod<void>("path/to/Logger", "purchase", sum, currency);
 ```
 
 * With implicit casts:
 ```cpp
-EasyJNI::callStaticVoidMethod("path/to/Logger", "purchase", float(3.14), "USD");
+EasyJNI::callStaticMethod<void>("path/to/Logger", "purchase", float(3.14), "USD");
 ```
 
 * And with implicit template instantiation 
 ```cpp
-EasyJNI::callStaticVoidMethod<float, std::string>("path/to/Logger", "purchase", 3.14, "USD");
+EasyJNI::callStaticMethod<void, float, std::string>("path/to/Logger", "purchase", 3.14, "USD");
 ```
 
 

@@ -1,7 +1,9 @@
 /****************************************************************************
  Copyright (c) 2015 Victor Komarov
+ Copyright (c) 2015 Jeff Wang
 
  https://github.com/fnz
+ https://github.com/summerinsects
  
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -24,173 +26,285 @@
 
 #if CC_TARGET_PLATFORM == CC_PLATFORM_ANDROID
 
-#include "jni.h"
+#include <jni.h>
 #include "jni/JniHelper.h"
 #include "platform/CCPlatformConfig.h"
+#include "base/ccUTF8.h"
 
-#include <vector>
-#include <unordered_map>
+namespace EasyJNIDetail {
+    struct LocalRefWrapper {
+        LocalRefWrapper(JNIEnv* env, jobject obj) : _env(env), _obj(obj) { }
+        ~LocalRefWrapper() { _env->DeleteLocalRef(_obj); }
+        // FIXME: copy constructor, move constructor
+    private:
+        JNIEnv* _env;
+        jobject _obj;
+    };
+
+    //
+    // ArgumentWrapper
+    //
+    template <class T> class ArgumentWrapper {
+        T _arg;
+    public:
+        ArgumentWrapper(JNIEnv*, T arg) : _arg(arg) { }
+        inline T get() const { return _arg; };
+    };
+
+    template <> class ArgumentWrapper<const char*> {
+        JNIEnv* _env;
+        jstring _str;
+
+        inline void set(const char *str) {
+            _str = cocos2d::StringUtils::newStringUTFJNI(_env, str ? str : "");
+        }
+    public:
+        ~ArgumentWrapper() { _env->DeleteLocalRef(_str); }
+        ArgumentWrapper(JNIEnv* env, const char* str) : _env(env) { set(str); }
+        ArgumentWrapper(JNIEnv* env, const std::string& str) : _env(env) { set(str.c_str()); }
+
+        inline jstring get() const { return _str; };
+    };
+
+    template <> class ArgumentWrapper<std::string> : public ArgumentWrapper<const char*> {
+    public:
+        ArgumentWrapper(JNIEnv* env, const char* str) : ArgumentWrapper<const char*>(env, str) { }
+        ArgumentWrapper(JNIEnv* env, const std::string& str) : ArgumentWrapper<const char*>(env, str) { }
+    };
+
+    //
+    // CharSequence
+    //
+    template <char... Chars>
+    struct CharSequence {
+        static const char value[sizeof...(Chars) + 1];
+    };
+
+    template <char... Chars>
+    const char CharSequence<Chars...>::value[sizeof...(Chars) + 1] = {
+        Chars...,
+    };
+
+    //
+    // SequenceConcatenator
+    //
+    template <class Seq, class... Seqs>
+    struct SequenceConcatenator;
+
+    template <char... Chars>
+    struct SequenceConcatenator<CharSequence<Chars...> > {
+        typedef CharSequence<Chars...> Result;
+    };
+
+    template <char... Chars1, char...Chars2>
+    struct SequenceConcatenator<CharSequence<Chars1...>, CharSequence<Chars2...> > {
+        typedef CharSequence<Chars1..., Chars2...> Result;
+    };
+
+    template <char... Chars1, char...Chars2, class ... Seq>
+    struct SequenceConcatenator<CharSequence<Chars1...>, CharSequence<Chars2...>, Seq...> {
+        typedef typename SequenceConcatenator<CharSequence<Chars1..., Chars2...>, Seq...>::Result Result;
+    };
+
+    //
+    // JNISignature
+    //
+    template <class T, class... Ts> struct JNISignature {
+        typedef typename SequenceConcatenator<typename JNISignature<T>::Sequence, typename JNISignature<Ts...>::Sequence>::Result Sequence;
+    };
+
+    template <> struct JNISignature<bool> {
+        typedef CharSequence<'Z'> Sequence;
+    };
+
+    template <> struct JNISignature<uint8_t> {
+        typedef CharSequence<'B'> Sequence;
+    };
+
+    template <> struct JNISignature<uint16_t> {
+        typedef CharSequence<'C'> Sequence;
+    };
+
+    template <> struct JNISignature<short> {
+        typedef CharSequence<'S'> Sequence;
+    };
+
+    template <> struct JNISignature<int> {
+        typedef CharSequence<'I'> Sequence;
+    };
+
+    template <> struct JNISignature<long> {
+        typedef CharSequence<'J'> Sequence;
+    };
+
+    template <> struct JNISignature<int64_t> {
+        typedef CharSequence<'J'> Sequence;
+    };
+
+    template <> struct JNISignature<float> {
+        typedef CharSequence<'F'> Sequence;
+    };
+
+    template <> struct JNISignature<double> {
+        typedef CharSequence<'D'> Sequence;
+    };
+
+    template <> struct JNISignature<void> {
+        typedef CharSequence<'V'> Sequence;
+    };
+
+    template <> struct JNISignature<std::string> {
+        typedef CharSequence<'L', 'j', 'a', 'v', 'a', '/', 'l', 'a', 'n', 'g', '/', 'S', 't', 'r', 'i', 'n', 'g', ';'> Sequence;
+    };
+
+    template <> struct JNISignature<const char*> : JNISignature<std::string> { };
+
+    template <class T> struct JNISignature<std::vector<T> > {
+        typedef typename SequenceConcatenator<CharSequence<'['>, typename JNISignature<T>::Sequence>::Result Sequence;
+    };
+
+    //
+    // SignatureGetter
+    //
+    template <class T> struct SignatureGetter;
+
+    template <class Ret, class... Args> struct SignatureGetter<Ret (Args...)> {
+        typedef typename SequenceConcatenator<CharSequence<'('>,
+            typename JNISignature<Args...>::Sequence,
+            CharSequence<')'>,
+            typename JNISignature<Ret>::Sequence>::Result SignatureSequence;
+    };
+
+    template<class Ret> struct SignatureGetter<Ret ()> {
+        typedef typename SequenceConcatenator<CharSequence<'(', ')'>,
+            typename JNISignature<Ret>::Sequence>::Result SignatureSequence;
+    };
+
+    //
+    // MethodInvokerImpl
+    //
+    template <class T> struct MethodInvokerImpl { };
+
+    template <> struct MethodInvokerImpl<bool> {
+        static bool staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+            return JNI_TRUE == env->CallStaticBooleanMethodV(clazz, methodID, args);
+        }
+    };
+
+    template <> struct MethodInvokerImpl<uint8_t> {
+        static uint8_t staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+            return env->CallStaticByteMethodV(clazz, methodID, args);
+        }
+    };
+
+    template <> struct MethodInvokerImpl<uint16_t> {
+        static uint16_t staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+            return env->CallStaticCharMethodV(clazz, methodID, args);
+        }
+    };
+
+    template <> struct MethodInvokerImpl<short> {
+        static short staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+            return env->CallStaticShortMethodV(clazz, methodID, args);
+        }
+    };
+
+    template <> struct MethodInvokerImpl<int> {
+        static int staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+            return env->CallStaticIntMethodV(clazz, methodID, args);
+        }
+    };
+
+    template <> struct MethodInvokerImpl<long> {
+        static long staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+            return static_cast<long>(env->CallStaticLongMethodV(clazz, methodID, args));
+        }
+    };
+
+    template <> struct MethodInvokerImpl<int64_t> {
+        static int64_t staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+            return env->CallStaticLongMethodV(clazz, methodID, args);
+        }
+    };
+
+    template <> struct MethodInvokerImpl<float> {
+        static float staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+            return env->CallStaticFloatMethodV(clazz, methodID, args);
+        }
+    };
+
+    template <> struct MethodInvokerImpl<double> {
+        static double staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+            return env->CallStaticDoubleMethodV(clazz, methodID, args);
+        }
+    };
+
+    template <> struct MethodInvokerImpl<void> {
+        static void staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+            env->CallStaticVoidMethodV(clazz, methodID, args);
+        }
+    };
+
+    template <> struct MethodInvokerImpl<std::string> {
+        static std::string staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+            jstring jret = (jstring)env->CallStaticObjectMethodV(clazz, methodID, args);
+            LocalRefWrapper temp(env, jret);
+            return cocos2d::StringUtils::getStringUTFCharsJNI(env, jret);
+        }
+    };
+
+    template <> struct MethodInvokerImpl<const char *> : MethodInvokerImpl<std::string> { };
+
+    //
+    // MethodInvoker
+    //
+    template <class Ret>
+    struct MethodInvoker {
+        static Ret staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, ...) {
+            va_list args;
+            va_start(args, methodID);
+            Ret ret = MethodInvokerImpl<Ret>::staticInvoke(env, clazz, methodID, args);
+            va_end(args);
+            return ret;
+        }
+    };
+
+    template <>
+    struct MethodInvoker<void> {
+        static void staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, ...) {
+            va_list args;
+            va_start(args, methodID);
+            MethodInvokerImpl<void>::staticInvoke(env, clazz, methodID, args);
+            va_end(args);
+        }
+    };
+}
+
+#define LOG_TAG "EasyJNI"
+#define LOGE(...)  __android_log_print(ANDROID_LOG_ERROR,LOG_TAG,__VA_ARGS__)
 
 class EasyJNI {
 public:
-    template <typename... Ts>
-    static void callStaticVoidMethod(const std::string& className, const std::string& methodName, Ts... xs) {
-        cocos2d::JniMethodInfo t;
-        std::string signature = "(" + std::string(getJNISignature(xs...)) + ")V";
-        if (cocos2d::JniHelper::getStaticMethodInfo(t, className.c_str(), methodName.c_str(), signature.c_str())) {
-            t.env->CallStaticVoidMethod(t.classID, t.methodID, convert(t, xs)...);
-            t.env->DeleteLocalRef(t.classID);
-            deleteLocalRefs(t.env);
-        } else {
-            reportError(className, methodName, signature);
-        }
-    }
-
-    template <typename... Ts>
-    static bool callStaticBooleanMethod(const std::string& className, const std::string& methodName, Ts... xs) {
-        jboolean jret = JNI_FALSE;
-        cocos2d::JniMethodInfo t;
-        std::string signature = "(" + std::string(getJNISignature(xs...)) + ")Z";
-        if (cocos2d::JniHelper::getStaticMethodInfo(t, className.c_str(), methodName.c_str(), signature.c_str())) {
-            jret = t.env->CallStaticBooleanMethod(t.classID, t.methodID, convert(t, xs)...);
-            t.env->DeleteLocalRef(t.classID);
-            deleteLocalRefs(t.env);
-        } else {
-            reportError(className, methodName, signature);
-        }
-        return (jret == JNI_TRUE);
-    }
-
-    template <typename... Ts>
-    static int callStaticIntMethod(const std::string& className, const std::string& methodName, Ts... xs) {
-        jint ret = 0;
-        cocos2d::JniMethodInfo t;
-        std::string signature = "(" + std::string(getJNISignature(xs...)) + ")I";
-        if (cocos2d::JniHelper::getStaticMethodInfo(t, className.c_str(), methodName.c_str(), signature.c_str())) {
-            ret = t.env->CallStaticIntMethod(t.classID, t.methodID, convert(t, xs)...);
-            t.env->DeleteLocalRef(t.classID);
-            deleteLocalRefs(t.env);
-        } else {
-            reportError(className, methodName, signature);
-        }
-        return ret;
-    }
-
-    template <typename... Ts>
-    static float callStaticFloatMethod(const std::string& className, const std::string& methodName, Ts... xs) {
-        jfloat ret = 0.0;
-        cocos2d::JniMethodInfo t;
-        std::string signature = "(" + std::string(getJNISignature(xs...)) + ")F";
-        if (cocos2d::JniHelper::getStaticMethodInfo(t, className.c_str(), methodName.c_str(), signature.c_str())) {
-            ret = t.env->CallStaticFloatMethod(t.classID, t.methodID, convert(t, xs)...);
-            t.env->DeleteLocalRef(t.classID);
-            deleteLocalRefs(t.env);
-        } else {
-            reportError(className, methodName, signature);
-        }
-        return ret;
-    }
-
-    template <typename... Ts>
-    static double callStaticDoubleMethod(const std::string& className, const std::string& methodName, Ts... xs) {
-        jdouble ret = 0.0;
-        cocos2d::JniMethodInfo t;
-        std::string signature = "(" + std::string(getJNISignature(xs...)) + ")D";
-        if (cocos2d::JniHelper::getStaticMethodInfo(t, className.c_str(), methodName.c_str(), signature.c_str())) {
-            ret = t.env->CallStaticDoubleMethod(t.classID, t.methodID, convert(t, xs)...);
-            t.env->DeleteLocalRef(t.classID);
-            deleteLocalRefs(t.env);
-        } else {
-            reportError(className, methodName, signature);
-        }
-        return ret;
-    }
-
-    template <typename... Ts>
-    static std::string callStaticStringMethod(const std::string& className, const std::string& methodName, Ts... xs) {
-        std::string ret;
+    template <typename Ret, typename... Args>
+    static Ret callStaticMethod(const char* className, const char* methodName, const Args& ...args) {
+        typedef typename EasyJNIDetail::SignatureGetter<Ret (Args...)>::SignatureSequence SignatureSequence;
+        const char* signature = SignatureSequence::value;
 
         cocos2d::JniMethodInfo t;
-        std::string signature = "(" + std::string(getJNISignature(xs...)) + ")Ljava/lang/String;";
-        if (cocos2d::JniHelper::getStaticMethodInfo(t, className.c_str(), methodName.c_str(), signature.c_str())) {
-            jstring jret = (jstring)t.env->CallStaticObjectMethod(t.classID, t.methodID, convert(t, xs)...);
-            ret = cocos2d::JniHelper::jstring2string(jret);
-            t.env->DeleteLocalRef(t.classID);
-            t.env->DeleteLocalRef(jret);
-            deleteLocalRefs(t.env);
-        } else {
-            reportError(className, methodName, signature);
+        if (cocos2d::JniHelper::getStaticMethodInfo(t, className, methodName, signature)) {
+            EasyJNIDetail::LocalRefWrapper clazz(t.env, t.classID);
+            return EasyJNIDetail::MethodInvoker<Ret>::staticInvoke(t.env, t.classID, t.methodID, EasyJNIDetail::ArgumentWrapper<Args>(t.env, args).get()...);
         }
-        return ret;
+        else {
+            reportError(className, methodName, signature);
+            return Ret();
+        }
     }
 
 private:
-    static jstring convert(cocos2d::JniMethodInfo& t, const char* x);
-
-    static jstring convert(cocos2d::JniMethodInfo& t, const std::string& x);
-
-    template <typename T>
-    static T convert(cocos2d::JniMethodInfo&, T x) {
-        return x;
+    static void reportError(const char* className, const char* methodName, const char* signature) {
+        LOGE("Failed to find static java method. Class name: %s, method name: %s, signature: %s ",  className, methodName, signature);
     }
-
-    static std::unordered_map<JNIEnv*, std::vector<jobject>> localRefs;
-
-    static void deleteLocalRefs(JNIEnv* env);
-
-    static std::string getJNISignature() {
-        return "";
-    }
-
-    static std::string getJNISignature(bool) {
-        return "Z";
-    }
-
-    static std::string getJNISignature(char) {
-        return "C";
-    }
-
-    static std::string getJNISignature(short) {
-        return "S";
-    }
-
-    static std::string getJNISignature(int) {
-        return "I";
-    }
-
-    static std::string getJNISignature(long) {
-        return "J";
-    }
-
-    static std::string getJNISignature(float) {
-        return "F";
-    }
-
-    static std::string getJNISignature(double) {
-        return "D";
-    }
-
-    static std::string getJNISignature(const char*) {
-        return "Ljava/lang/String;";
-    }
-
-    static std::string getJNISignature(const std::string&) {
-        return "Ljava/lang/String;";
-    }
-
-    template <typename T>
-    static std::string getJNISignature(T x) {
-        // This template should never be instantiated
-        static_assert(sizeof(x) == 0, "Unsupported argument type");
-        return "";
-    }
-
-    template <typename T, typename... Ts>
-    static std::string getJNISignature(T x, Ts... xs) {
-        return getJNISignature(x) + getJNISignature(xs...);
-    }
-
-    static void reportError(const std::string& className, const std::string& methodName, const std::string& signature);
 };
 
 #endif
