@@ -55,9 +55,15 @@ namespace EasyJNIDetail {
         JNIEnv* _env;
         jstring _str;
 
+        ArgumentWrapper(const ArgumentWrapper&) = delete;
+        ArgumentWrapper(ArgumentWrapper&&) = delete;
+        ArgumentWrapper& operator=(const ArgumentWrapper&) = delete;
+        ArgumentWrapper& operator=(ArgumentWrapper&&) = delete;
+
         inline void set(const char *str) {
             _str = cocos2d::StringUtils::newStringUTFJNI(_env, str ? str : "");
         }
+
     public:
         ~ArgumentWrapper() { _env->DeleteLocalRef(_str); }
         ArgumentWrapper(JNIEnv* env, const char* str) : _env(env) { set(str); }
@@ -66,11 +72,24 @@ namespace EasyJNIDetail {
         inline jstring get() const { return _str; };
     };
 
-    template <> class ArgumentWrapper<std::string> : public ArgumentWrapper<const char*> {
-    public:
-        ArgumentWrapper(JNIEnv* env, const char* str) : ArgumentWrapper<const char*>(env, str) { }
-        ArgumentWrapper(JNIEnv* env, const std::string& str) : ArgumentWrapper<const char*>(env, str) { }
+    //
+    // ArgumentTypeConverter
+    //
+    template <class T> struct ArgumentTypeConverter {
+        typedef T Type;
     };
+
+    template <> struct ArgumentTypeConverter<std::string> {
+        typedef const char* Type;
+    };
+
+    template <size_t N> struct ArgumentTypeConverter<char [N]> : ArgumentTypeConverter<std::string> { };
+    template <size_t N> struct ArgumentTypeConverter<const char [N]> : ArgumentTypeConverter<std::string> { };
+
+    template <class T> struct ArgumentTypeConverter<const T> :ArgumentTypeConverter<T> { };
+    template <class T> struct ArgumentTypeConverter<T&> :ArgumentTypeConverter<T> { };
+    template <class T> struct ArgumentTypeConverter<const T&> :ArgumentTypeConverter<T> { };
+    template <class T> struct ArgumentTypeConverter<T&&> :ArgumentTypeConverter<T> { };
 
     //
     // CharSequence
@@ -153,15 +172,23 @@ namespace EasyJNIDetail {
         typedef CharSequence<'V'> Sequence;
     };
 
-    template <> struct JNISignature<std::string> {
+    template <> struct JNISignature<char*> {
         typedef CharSequence<'L', 'j', 'a', 'v', 'a', '/', 'l', 'a', 'n', 'g', '/', 'S', 't', 'r', 'i', 'n', 'g', ';'> Sequence;
     };
+    template <> struct JNISignature<const char*> : JNISignature<char*> { };
+    template <size_t N> struct JNISignature<char [N]> : JNISignature<char*> { };
+    template <size_t N> struct JNISignature<const char [N]> : JNISignature<char*> { };
 
-    template <> struct JNISignature<const char*> : JNISignature<std::string> { };
+    template <> struct JNISignature<std::string> : JNISignature<char*> { };
 
     template <class T> struct JNISignature<std::vector<T> > {
         typedef typename SequenceConcatenator<CharSequence<'['>, typename JNISignature<T>::Sequence>::Result Sequence;
     };
+
+    template <class T> struct JNISignature<const T> : JNISignature<T> { };
+    template <class T> struct JNISignature<T&> : JNISignature<T> { };
+    template <class T> struct JNISignature<const T&> : JNISignature<T> { };
+    template <class T> struct JNISignature<T&&> : JNISignature<T> { };
 
     //
     // SignatureGetter
@@ -293,7 +320,8 @@ public:
         cocos2d::JniMethodInfo t;
         if (cocos2d::JniHelper::getStaticMethodInfo(t, className, methodName, signature)) {
             EasyJNIDetail::LocalRefWrapper clazz(t.env, t.classID);
-            return EasyJNIDetail::MethodInvoker<Ret>::staticInvoke(t.env, t.classID, t.methodID, EasyJNIDetail::ArgumentWrapper<Args>(t.env, args).get()...);
+            return EasyJNIDetail::MethodInvoker<Ret>::staticInvoke(t.env, t.classID, t.methodID,
+                EasyJNIDetail::ArgumentWrapper<typename EasyJNIDetail::ArgumentTypeConverter<Args>::Type>(t.env, args).get()...);
         }
         else {
             reportError(className, methodName, signature);
