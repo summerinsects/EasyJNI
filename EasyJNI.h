@@ -49,11 +49,13 @@ namespace EasyJNIDetail {
     //
     // ArgumentWrapper
     //
-    template <class T> class ArgumentWrapper {
-        T _arg;
+    template <class Ty> class ArgumentWrapper {
+        Ty _arg;
+
     public:
-        explicit ArgumentWrapper(JNIEnv*, T arg) : _arg(arg) { }
-        inline T get() const { return _arg; };
+        explicit ArgumentWrapper(JNIEnv*, Ty arg) : _arg(arg) { }
+
+        inline Ty get() const { return _arg; };
     };
 
     template <> class ArgumentWrapper<const char*> {
@@ -65,36 +67,35 @@ namespace EasyJNIDetail {
         ArgumentWrapper& operator=(const ArgumentWrapper&) = delete;
         ArgumentWrapper& operator=(ArgumentWrapper&&) = delete;
 
-        inline void set(const char *str) {
-            _str = StringUtils::newStringUTFJNI(_env, str ? str : "");
+    public:
+        ~ArgumentWrapper() {
+            _env->DeleteLocalRef(_str);
         }
 
-    public:
-        ~ArgumentWrapper() { _env->DeleteLocalRef(_str); }
-        explicit ArgumentWrapper(JNIEnv* env, const char* str) : _env(env) { set(str); }
-        explicit ArgumentWrapper(JNIEnv* env, const std::string& str) : _env(env) { set(str.c_str()); }
+        explicit ArgumentWrapper(JNIEnv* env, const char* str) : _env(env) {
+            _str = StringUtils::newStringUTFJNI(_env, str != nullptr ? str : "");
+        }
+
+        explicit ArgumentWrapper(JNIEnv* env, const std::string& str) : _env(env) {
+            _str = StringUtils::newStringUTFJNI(_env, str.c_str());
+        }
 
         inline jstring get() const { return _str; };
     };
 
     //
-    // ArgumentTypeConverter
+    // ArgumentConverter
     //
-    template <class T> struct ArgumentTypeConverter {
-        typedef T Type;
-    };
+    template <class Ty> struct ArgumentConverter { typedef Ty Type; };
 
-    template <> struct ArgumentTypeConverter<std::string> {
-        typedef const char* Type;
-    };
+    template <> struct ArgumentConverter<std::string> { typedef const char* Type; };
+    template <size_t Size> struct ArgumentConverter<char [Size]> { typedef const char* Type; };
+    template <size_t Size> struct ArgumentConverter<const char [Size]> { typedef const char* Type; };
 
-    template <size_t N> struct ArgumentTypeConverter<char [N]> : ArgumentTypeConverter<std::string> { };
-    template <size_t N> struct ArgumentTypeConverter<const char [N]> : ArgumentTypeConverter<std::string> { };
-
-    template <class T> struct ArgumentTypeConverter<const T> :ArgumentTypeConverter<T> { };
-    template <class T> struct ArgumentTypeConverter<T&> :ArgumentTypeConverter<T> { };
-    template <class T> struct ArgumentTypeConverter<const T&> :ArgumentTypeConverter<T> { };
-    template <class T> struct ArgumentTypeConverter<T&&> :ArgumentTypeConverter<T> { };
+    template <class Ty> struct ArgumentConverter<const Ty> :ArgumentConverter<Ty> { };
+    template <class Ty> struct ArgumentConverter<Ty&> :ArgumentConverter<Ty> { };
+    template <class Ty> struct ArgumentConverter<const Ty&> :ArgumentConverter<Ty> { };
+    template <class Ty> struct ArgumentConverter<Ty&&> :ArgumentConverter<Ty> { };
 
     //
     // CharSequence
@@ -112,7 +113,7 @@ namespace EasyJNIDetail {
     //
     // SequenceConcatenator
     //
-    template <class Seq, class... Seqs>
+    template <class Seq1, class... SeqN>
     struct SequenceConcatenator;
 
     template <char... Chars>
@@ -125,188 +126,262 @@ namespace EasyJNIDetail {
         typedef CharSequence<Chars1..., Chars2...> Result;
     };
 
-    template <char... Chars1, char...Chars2, class ... Seq>
-    struct SequenceConcatenator<CharSequence<Chars1...>, CharSequence<Chars2...>, Seq...> {
-        typedef typename SequenceConcatenator<CharSequence<Chars1..., Chars2...>, Seq...>::Result Result;
+    template <char... Chars1, char...Chars2, class ... Rest>
+    struct SequenceConcatenator<CharSequence<Chars1...>, CharSequence<Chars2...>, Rest...> {
+        typedef typename SequenceConcatenator<CharSequence<Chars1..., Chars2...>, Rest...>::Result Result;
     };
 
     //
-    // JNISignature
+    // SignatureImpl
     //
-    template <class T, class... Ts> struct JNISignature {
-        typedef typename SequenceConcatenator<typename JNISignature<T>::Sequence, typename JNISignature<Ts...>::Sequence>::Result Sequence;
+    template <class Ty1, class... TyN> struct SignatureImpl {
+        typedef typename SequenceConcatenator<typename SignatureImpl<Ty1>::Sequence,
+            typename SignatureImpl<TyN...>::Sequence>::Result Sequence;
     };
 
-    template <> struct JNISignature<bool> {
-        typedef CharSequence<'Z'> Sequence;
-    };
-
-    template <> struct JNISignature<uint8_t> {
-        typedef CharSequence<'B'> Sequence;
-    };
-
-    template <> struct JNISignature<uint16_t> {
-        typedef CharSequence<'C'> Sequence;
-    };
-
-    template <> struct JNISignature<short> {
-        typedef CharSequence<'S'> Sequence;
-    };
-
-    template <> struct JNISignature<int> {
-        typedef CharSequence<'I'> Sequence;
-    };
-
-    template <> struct JNISignature<long> {
-        typedef CharSequence<'J'> Sequence;
-    };
-
-    template <> struct JNISignature<int64_t> {
-        typedef CharSequence<'J'> Sequence;
-    };
-
-    template <> struct JNISignature<float> {
-        typedef CharSequence<'F'> Sequence;
-    };
-
-    template <> struct JNISignature<double> {
-        typedef CharSequence<'D'> Sequence;
-    };
-
-    template <> struct JNISignature<void> {
-        typedef CharSequence<'V'> Sequence;
-    };
-
-    template <> struct JNISignature<char*> {
+    template <> struct SignatureImpl<bool> { typedef CharSequence<'Z'> Sequence; };
+    template <> struct SignatureImpl<uint8_t> { typedef CharSequence<'B'> Sequence; };
+    template <> struct SignatureImpl<uint16_t> { typedef CharSequence<'C'> Sequence; };
+    template <> struct SignatureImpl<short> { typedef CharSequence<'S'> Sequence; };
+    template <> struct SignatureImpl<int> { typedef CharSequence<'I'> Sequence; };
+    template <> struct SignatureImpl<long> { typedef CharSequence<'J'> Sequence; };
+    template <> struct SignatureImpl<int64_t> { typedef CharSequence<'J'> Sequence; };
+    template <> struct SignatureImpl<float> { typedef CharSequence<'F'> Sequence; };
+    template <> struct SignatureImpl<double> { typedef CharSequence<'D'> Sequence; };
+    template <> struct SignatureImpl<void> { typedef CharSequence<'V'> Sequence; };
+    template <> struct SignatureImpl<char*> {
         typedef CharSequence<'L', 'j', 'a', 'v', 'a', '/', 'l', 'a', 'n', 'g', '/', 'S', 't', 'r', 'i', 'n', 'g', ';'> Sequence;
     };
-    template <> struct JNISignature<const char*> : JNISignature<char*> { };
-    template <size_t N> struct JNISignature<char [N]> : JNISignature<char*> { };
-    template <size_t N> struct JNISignature<const char [N]> : JNISignature<char*> { };
+    template <> struct SignatureImpl<const char*> : SignatureImpl<char*> { };
+    template <size_t Size> struct SignatureImpl<char [Size]> : SignatureImpl<char*> { };
+    template <size_t Size> struct SignatureImpl<const char [Size]> : SignatureImpl<char*> { };
 
-    template <> struct JNISignature<std::string> : JNISignature<char*> { };
+    template <> struct SignatureImpl<std::string> : SignatureImpl<char*> { };
 
-    template <class T> struct JNISignature<std::vector<T> > {
-        typedef typename SequenceConcatenator<CharSequence<'['>, typename JNISignature<T>::Sequence>::Result Sequence;
+    template <class Ty> struct SignatureImpl<std::vector<Ty> > {
+        typedef typename SequenceConcatenator<CharSequence<'['>,
+            typename SignatureImpl<Ty>::Sequence>::Result Sequence;
     };
 
-    template <class T> struct JNISignature<const T> : JNISignature<T> { };
-    template <class T> struct JNISignature<T&> : JNISignature<T> { };
-    template <class T> struct JNISignature<const T&> : JNISignature<T> { };
-    template <class T> struct JNISignature<T&&> : JNISignature<T> { };
+    template <class Ty> struct SignatureImpl<const Ty> : SignatureImpl<Ty> { };
+    template <class Ty> struct SignatureImpl<Ty&> : SignatureImpl<Ty> { };
+    template <class Ty> struct SignatureImpl<const Ty&> : SignatureImpl<Ty> { };
+    template <class Ty> struct SignatureImpl<Ty&&> : SignatureImpl<Ty> { };
 
     //
-    // SignatureGetter
+    // SignatureParser
+    // parses signature during compiling time
     //
-    template <class T> struct SignatureGetter;
+    template <class Ty> struct SignatureParser;
 
-    template <class Ret, class... Args> struct SignatureGetter<Ret (Args...)> {
+    template <class Ret, class... Args> struct SignatureParser<Ret (Args...)> {
         typedef typename SequenceConcatenator<CharSequence<'('>,
-            typename JNISignature<Args...>::Sequence,
+            typename SignatureImpl<Args...>::Sequence,
             CharSequence<')'>,
-            typename JNISignature<Ret>::Sequence>::Result SignatureSequence;
+            typename SignatureImpl<Ret>::Sequence>::Result Result;
     };
 
-    template<class Ret> struct SignatureGetter<Ret ()> {
+    template <class Ret> struct SignatureParser<Ret ()> {
         typedef typename SequenceConcatenator<CharSequence<'(', ')'>,
-            typename JNISignature<Ret>::Sequence>::Result SignatureSequence;
+            typename SignatureImpl<Ret>::Sequence>::Result Result;
     };
 
     //
-    // MethodInvokerImpl
+    // MethodWrapper
+    // wrap CallStaticXXXMethodV GetXXXArrayElements ReleaseXXXArrayElements
     //
-    template <class T> struct MethodInvokerImpl { };
+    template <class Ret> struct MethodWrapper;
 
-    template <> struct MethodInvokerImpl<bool> {
-        static bool staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+    template <> struct MethodWrapper<bool> {
+        static bool callStatic(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
             return JNI_TRUE == env->CallStaticBooleanMethodV(clazz, methodID, args);
         }
+
+        typedef jbooleanArray ArrayType;
+        typedef jboolean ElementType;
+        static ElementType* getArrayElements(JNIEnv* env, ArrayType arr, jboolean* isCopy) {
+            env->GetBooleanArrayElements(arr, isCopy);
+        }
+        static void releaseArrayElements(JNIEnv* env, ArrayType arr, ElementType* elems, jint mode) {
+            env->ReleaseBooleanArrayElements(arr, elems, mode);
+        }
     };
 
-    template <> struct MethodInvokerImpl<uint8_t> {
-        static uint8_t staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+    template <> struct MethodWrapper<uint8_t> {
+        static uint8_t callStatic(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
             return env->CallStaticByteMethodV(clazz, methodID, args);
         }
+        typedef jbyteArray ArrayType;
+        typedef jbyte ElementType;
+        static ElementType* getArrayElements(JNIEnv* env, ArrayType arr, jboolean* isCopy) {
+            env->GetByteArrayElements(arr, isCopy);
+        }
+
+        static void releaseArrayElements(JNIEnv* env, ArrayType arr, ElementType* elems, jint mode) {
+            env->ReleaseByteArrayElements(arr, elems, mode);
+        }
     };
 
-    template <> struct MethodInvokerImpl<uint16_t> {
-        static uint16_t staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+    template <> struct MethodWrapper<uint16_t> {
+        static uint16_t callStatic(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
             return env->CallStaticCharMethodV(clazz, methodID, args);
         }
+
+        typedef jcharArray ArrayType;
+        typedef jchar ElementType;
+        static ElementType* getArrayElements(JNIEnv* env, ArrayType arr, jboolean* isCopy) {
+            env->GetCharArrayElements(arr, isCopy);
+        }
+        static void releaseArrayElements(JNIEnv* env, ArrayType arr, ElementType* elems, jint mode) {
+            env->ReleaseCharArrayElements(arr, elems, mode);
+        }
     };
 
-    template <> struct MethodInvokerImpl<short> {
-        static short staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+    template <> struct MethodWrapper<short> {
+        static short callStatic(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
             return env->CallStaticShortMethodV(clazz, methodID, args);
         }
+
+        typedef jshortArray ArrayType;
+        typedef jshort ElementType;
+        static ElementType* getArrayElements(JNIEnv* env, ArrayType arr, jboolean* isCopy) {
+            env->GetShortArrayElements(arr, isCopy);
+        }
+        static void releaseArrayElements(JNIEnv* env, ArrayType arr, ElementType* elems, jint mode) {
+            env->ReleaseShortArrayElements(arr, elems, mode);
+        }
     };
 
-    template <> struct MethodInvokerImpl<int> {
-        static int staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+    template <> struct MethodWrapper<int> {
+        static int callStatic(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
             return env->CallStaticIntMethodV(clazz, methodID, args);
         }
+
+        typedef jintArray ArrayType;
+        typedef jint ElementType;
+        static ElementType* getArrayElements(JNIEnv* env, ArrayType arr, jboolean* isCopy) {
+            env->GetIntArrayElements(arr, isCopy);
+        }
+        static void releaseArrayElements(JNIEnv* env, ArrayType arr, ElementType* elems, jint mode) {
+            env->ReleaseIntArrayElements(arr, elems, mode);
+        }
     };
 
-    template <> struct MethodInvokerImpl<long> {
-        static long staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+    template <> struct MethodWrapper<long> {
+        static long callStatic(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
             return static_cast<long>(env->CallStaticLongMethodV(clazz, methodID, args));
         }
+
+        typedef jlongArray ArrayType;
+        typedef jlong ElementType;
+        static ElementType* getArrayElements(JNIEnv* env, ArrayType arr, jboolean* isCopy) {
+            env->GetLongArrayElements(arr, isCopy);
+        }
+        static void releaseArrayElements(JNIEnv* env, ArrayType arr, ElementType* elems, jint mode) {
+            env->ReleaseLongArrayElements(arr, elems, mode);
+        }
     };
 
-    template <> struct MethodInvokerImpl<int64_t> {
-        static int64_t staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+    template <> struct MethodWrapper<int64_t> {
+        static int64_t callStatic(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
             return env->CallStaticLongMethodV(clazz, methodID, args);
         }
+
+        typedef jlongArray ArrayType;
+        typedef jlong ElementType;
+        static ElementType* getArrayElements(JNIEnv* env, ArrayType arr, jboolean* isCopy) {
+            env->GetLongArrayElements(arr, isCopy);
+        }
+        static void releaseArrayElements(JNIEnv* env, ArrayType arr, ElementType* elems, jint mode) {
+            env->ReleaseLongArrayElements(arr, elems, mode);
+        }
     };
 
-    template <> struct MethodInvokerImpl<float> {
-        static float staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+    template <> struct MethodWrapper<float> {
+        static float callStatic(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
             return env->CallStaticFloatMethodV(clazz, methodID, args);
         }
-    };
 
-    template <> struct MethodInvokerImpl<double> {
-        static double staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
-            return env->CallStaticDoubleMethodV(clazz, methodID, args);
+        typedef jfloatArray ArrayType;
+        typedef jfloat ElementType;
+        static ElementType* getArrayElements(JNIEnv* env, ArrayType arr, jboolean* isCopy) {
+            env->GetFloatArrayElements(arr, isCopy);
+        }
+        static void releaseArrayElements(JNIEnv* env, ArrayType arr, ElementType* elems, jint mode) {
+            env->ReleaseFloatArrayElements(arr, elems, mode);
         }
     };
 
-    template <> struct MethodInvokerImpl<void> {
-        static void staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+    template <> struct MethodWrapper<double> {
+        static double callStatic(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+            return env->CallStaticDoubleMethodV(clazz, methodID, args);
+        }
+
+        typedef jdoubleArray ArrayType;
+        typedef jdouble ElementType;
+        static ElementType* getArrayElements(JNIEnv* env, ArrayType arr, jboolean* isCopy) {
+            env->GetDoubleArrayElements(arr, isCopy);
+        }
+        static void releaseArrayElements(JNIEnv* env, ArrayType arr, ElementType* elems, jint mode) {
+            env->ReleaseDoubleArrayElements(arr, elems, mode);
+        }
+    };
+
+    template <> struct MethodWrapper<void> {
+        static void callStatic(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
             env->CallStaticVoidMethodV(clazz, methodID, args);
         }
     };
 
-    template <> struct MethodInvokerImpl<std::string> {
-        static std::string staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+    template <> struct MethodWrapper<std::string> {
+        static std::string callStatic(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
             jstring jret = (jstring)env->CallStaticObjectMethodV(clazz, methodID, args);
             LocalRefWrapper temp(env, jret);
-            return cocos2d::StringUtils::getStringUTFCharsJNI(env, jret);
+            return StringUtils::getStringUTFCharsJNI(env, jret);
         }
     };
 
-    template <> struct MethodInvokerImpl<const char *> : MethodInvokerImpl<std::string> { };
+    template <class Ty> struct MethodWrapper<std::vector<Ty> > {
+        static std::vector<Ty> callStatic(JNIEnv* env, jclass clazz, jmethodID methodID, va_list args) {
+            std::vector<Ty> ret;
+
+            typedef MethodWrapper<Ty> ElemWrapper;
+            auto jarr = (typename ElemWrapper::ArrayType)env->CallStaticObjectMethodV(clazz, methodID, args);
+            JniHelperDetail::LocalRefWrapper arr(env, jarr);
+
+            jsize len = env->GetArrayLength(jarr);
+            ret.reserve(len);
+            if (len > 0) {
+                auto elems = ElemWrapper::getArrayElements(env, jarr, nullptr);
+                for (jsize i = 0; i < len; ++i) {
+                    ret.push_back(elems[i]);
+                }
+                ElemWrapper::releaseArrayElements(env, jarr, elems, 0);
+            }
+
+            return ret;
+        }
+    };
 
     //
     // MethodInvoker
     //
-    template <class Ret>
-    struct MethodInvoker {
-        static Ret staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, ...) {
+    template <class Ret> struct MethodInvoker {
+        static Ret callStatic(JNIEnv* env, jclass clazz, jmethodID methodID, ...) {
             va_list args;
             va_start(args, methodID);
-            Ret ret = MethodInvokerImpl<Ret>::staticInvoke(env, clazz, methodID, args);
+            Ret ret = MethodWrapper<Ret>::callStatic(env, clazz, methodID, args);
             va_end(args);
             return ret;
         }
     };
 
-    template <>
-    struct MethodInvoker<void> {
-        static void staticInvoke(JNIEnv* env, jclass clazz, jmethodID methodID, ...) {
+    // va_end is necessary, but it is not allowed to declare a variable of type void
+    template <> struct MethodInvoker<void> {
+        static void callStatic(JNIEnv* env, jclass clazz, jmethodID methodID, ...) {
             va_list args;
             va_start(args, methodID);
-            MethodInvokerImpl<void>::staticInvoke(env, clazz, methodID, args);
+            MethodWrapper<void>::callStatic(env, clazz, methodID, args);
             va_end(args);
         }
     };
@@ -319,14 +394,14 @@ class EasyJNI {
 public:
     template <typename Ret, typename... Args>
     static Ret callStaticMethod(const char* className, const char* methodName, const Args& ...args) {
-        typedef typename EasyJNIDetail::SignatureGetter<Ret (Args...)>::SignatureSequence SignatureSequence;
-        const char* signature = SignatureSequence::value;
+        typedef typename EasyJNIDetail::SignatureParser<Ret (Args...)>::Result Signature;
+        const char* signature = Signature::value;
 
         cocos2d::JniMethodInfo t;
         if (cocos2d::JniHelper::getStaticMethodInfo(t, className, methodName, signature)) {
             EasyJNIDetail::LocalRefWrapper clazz(t.env, t.classID);
-            return EasyJNIDetail::MethodInvoker<Ret>::staticInvoke(t.env, t.classID, t.methodID,
-                EasyJNIDetail::ArgumentWrapper<typename EasyJNIDetail::ArgumentTypeConverter<Args>::Type>(t.env, args).get()...);
+            return EasyJNIDetail::MethodInvoker<Ret>::callStatic(t.env, t.classID, t.methodID,
+                EasyJNIDetail::ArgumentWrapper<typename EasyJNIDetail::ArgumentConverter<Args>::Type>(t.env, args).get()...);
         }
         else {
             reportError(className, methodName, signature);
