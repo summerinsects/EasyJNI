@@ -64,12 +64,19 @@ namespace EasyJNIDetail {
     // CharSequence
     //
     template <char... Chars>
-    struct CharSequence {
+    struct CharSequence { };
+
+    //
+    // CompileTimeString
+    //
+    template <class Ty> struct CompileTimeString;
+
+    template <char... Chars> struct CompileTimeString<CharSequence<Chars...> > {
         static const char value[sizeof...(Chars) + 1];
     };
 
     template <char... Chars>
-    const char CharSequence<Chars...>::value[sizeof...(Chars) + 1] = {
+    const char CompileTimeString<CharSequence<Chars...> >::value[sizeof...(Chars) + 1] = {
         Chars..., '\0'
     };
 
@@ -364,10 +371,11 @@ namespace EasyJNIDetail {
     template <class Ty> struct SignatureParser;
 
     template <class Ret, class... Args> struct SignatureParser<Ret (Args...)> {
-        typedef typename SequenceConcatenator<CharSequence<'('>,
+        typedef CompileTimeString<
+            typename SequenceConcatenator<CharSequence<'('>,
             typename TypeConverter<typename std::remove_reference<typename std::remove_const<Args>::type>::type>::Signature...,
             CharSequence<')'>,
-            typename TypeConverter<Ret>::Signature>::Result Result;
+            typename TypeConverter<Ret>::Signature>::Result> Result;
     };
 
     //
